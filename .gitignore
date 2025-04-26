@@ -1,3 +1,6 @@
 node_modules
 .env
 .vercel
+
+git remote add origin https://github.com/CoroSempi/tgtgy.git
+git push -u origin main

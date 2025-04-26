@@ -114,7 +114,12 @@ client.post("/verifyCode", async (req, res) => {
       if (student.verificationCode == code) {
         // Generate token
         const token = jwt.sign(
-          { name: student.fullName, branch: student.branch, role: "student" },
+          {
+            name: student.fullName,
+            id: student._id,
+            branch: student.branch,
+            role: "student",
+          },
           process.env.TOKEN_ACCESS,
           { expiresIn: "12h" }
         );
@@ -136,8 +141,8 @@ client.post("/verifyCode", async (req, res) => {
 client.post("/resetPassword", TokenMiddleware, async (req, res) => {
   try {
     const { newPassword } = req.body;
-    const { name } = req.user;
-    const student = await Students.findOne({ fullName: name });
+    const { id } = req.user;
+    const student = await Students.findById(id);
     if (!student) {
       return res.status(409).json({ message: "Student not found." });
     } else {

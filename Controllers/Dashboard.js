@@ -119,7 +119,12 @@ dashboard.post("/verifyCode", async (req, res) => {
       if (admin.verificationCode == code) {
         // Generate token
         const token = jwt.sign(
-          { name: admin.fullName, branch: admin.branch },
+          {
+            name: admin.fullName,
+            id: admin._id,
+            branch: admin.branch,
+            role: "admin",
+          },
           process.env.TOKEN_ACCESS,
           { expiresIn: "12h" }
         );
