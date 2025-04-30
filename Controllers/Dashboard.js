@@ -62,6 +62,11 @@ dashboard.post("/signIn", async (req, res) => {
         );
         return res.status(200).json({
           AccessToken: token,
+          adminData: {
+            fullName: admin.fullName,
+            branch: admin.branch,
+            Avatar: admin.Avatar,
+          },
         });
       } else {
         return res.status(401).json({ message: "Invalid password" });
@@ -367,6 +372,27 @@ dashboard.get("/getUserByID/:id", TokenMiddleware, async (req, res) => {
     const student = await Students.findById(req.params.id);
     if (student) {
       return res.status(200).json(student);
+    } else {
+      return res.status(404).json({ message: "Student not found" });
+    }
+  } catch (error) {
+    res.status(500).json({ message: "An error occurred: " + error.message });
+  }
+});
+
+dashboard.put("/UpdateUser/:id", TokenMiddleware, async (req, res) => {
+  try {
+    const student = await Students.findById(req.params.id);
+    console.log(req.body);
+
+    if (student) {
+      const updatedStudent = await Students.findOneAndUpdate(
+        { _id: req.params.id },
+        { $set: { ...req.body, student } },
+        { new: true }
+      );
+
+      return res.status(200).json(updatedStudent);
     } else {
       return res.status(404).json({ message: "Student not found" });
     }
