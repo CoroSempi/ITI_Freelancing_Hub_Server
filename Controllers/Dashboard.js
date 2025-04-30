@@ -309,6 +309,7 @@ dashboard.post(
             studentID: std._id,
             branch: std.branch,
             fullName: std.fullName,
+            track: std.trackName,
           });
         });
         return res.status(200).json({ message: "Track added successfully." });

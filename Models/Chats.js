@@ -35,6 +35,10 @@ const chatSchema = new Schema({
     type: String,
     required: true,
   },
+  track: {
+    type: String,
+    required: true,
+  },
   ChatRoom: {
     type: [messageSchema],
     default: [],
