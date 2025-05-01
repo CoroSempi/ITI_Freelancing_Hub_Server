@@ -219,7 +219,9 @@ dashboard.patch(
       const avatar64 = await toBase64(avatar);
       admin.Avatar = avatar64;
       admin.save();
-      return res.status(200).json({ message: "Avatar changed successfully" });
+      return res
+        .status(200)
+        .json({ message: "Avatar changed successfully", Avatar: avatar64 });
     } catch (error) {
       return res
         .status(500)
