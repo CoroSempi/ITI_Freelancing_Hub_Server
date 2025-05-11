@@ -28,6 +28,7 @@ import Chats from "../Models/Chats.js";
 import DirectJob from "../Models/DirectJob.js";
 import RemoteJob from "../Models/RemoteJob.js";
 import PlatformJob from "../Models/PlatformJob.js";
+import Certificate from "../Models/Certificate.js";
 
 const dashboard = Router();
 
@@ -74,6 +75,17 @@ dashboard.post("/signIn", async (req, res) => {
     } else {
       return res.status(404).json({ message: "Admin not found" });
     }
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "An error occurred while fetching data" });
+  }
+});
+
+// Client Check Token
+dashboard.get("/checkToken", TokenMiddleware, async (req, res) => {
+  try {
+    res.status(200).json({ message: "Token is valid" });
   } catch (error) {
     return res
       .status(500)
@@ -354,6 +366,36 @@ dashboard.get("/Track/:id", async (req, res) => {
   }
 });
 
+// Dashboard Delete Track
+dashboard.delete("/Track/:id", async (req, res) => {
+  try {
+    const TrackID = req.params.id;
+    const deletedTrack = await Tracks.findByIdAndDelete(TrackID);
+
+    if (!deletedTrack) {
+      return res.status(404).json({ message: "Track not found." });
+    }
+
+    const students = await Students.find({ trackID: TrackID });
+    await Students.deleteMany({ trackID: TrackID });
+
+    for (const std of students) {
+      console.log(std._id);
+      await Notifications.deleteOne({ studentID: std._id });
+      await Chats.deleteOne({ studentID: std._id });
+      await DirectJob.deleteMany({ uploadedBy: std._id });
+      await PlatformJob.deleteMany({ uploadedBy: std._id });
+      await RemoteJob.deleteMany({ uploadedBy: std._id });
+      await Certificate.deleteMany({ uploadedBy: std._id });
+    }
+
+    return res.status(200).json({ message: "Track deleted successfully." });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "An error occurred: " + error.message });
+  }
+});
+
 // Dashboard Search Users
 dashboard.get("/search", TokenMiddleware, async (req, res) => {
   try {
@@ -383,24 +425,85 @@ dashboard.get("/getUserByID/:id", TokenMiddleware, async (req, res) => {
   }
 });
 
+// Dashboard Update User By Id
 dashboard.put("/UpdateUser/:id", TokenMiddleware, async (req, res) => {
   try {
-    const student = await Students.findById(req.params.id);
-    console.log(req.body);
+    const { id: userIdFromToken } = req.user;
+    const { id: targetUserId } = req.params;
 
-    if (student) {
-      const updatedStudent = await Students.findOneAndUpdate(
-        { _id: req.params.id },
-        { $set: { ...req.body, student } },
-        { new: true }
-      );
-
-      return res.status(200).json(updatedStudent);
-    } else {
+    const student = await Students.findById(targetUserId);
+    if (!student) {
       return res.status(404).json({ message: "Student not found" });
     }
+
+    const allowedFields = [
+      "avatar",
+      "fullName",
+      "phone",
+      "email",
+      "address",
+      "governorate",
+      "graduationGrade",
+      "branch",
+    ];
+
+    const updates = {};
+    allowedFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        updates[field] = req.body[field];
+      }
+    });
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ message: "No valid fields to update." });
+    }
+
+    const updatedStudent = await Students.findOneAndUpdate(
+      { _id: targetUserId },
+      { $set: updates },
+      { new: true }
+    );
+
+    const syncFields = {};
+    if (updates.fullName) syncFields.studentName = updates.fullName;
+    if (updates.branch) syncFields.branch = updates.branch;
+
+    const chatSync = {};
+    if (updates.fullName) chatSync.fullName = updates.fullName;
+    if (updates.branch) chatSync.branch = updates.branch;
+
+    await Promise.all([
+      Object.keys(chatSync).length > 0 &&
+        Chats.updateMany({ studentID: targetUserId }, { $set: chatSync }),
+
+      Object.keys(syncFields).length > 0 &&
+        Certificate.updateMany(
+          { uploadedBy: targetUserId },
+          { $set: syncFields }
+        ),
+
+      Object.keys(syncFields).length > 0 &&
+        DirectJob.updateMany(
+          { uploadedBy: targetUserId },
+          { $set: syncFields }
+        ),
+      Object.keys(syncFields).length > 0 &&
+        PlatformJob.updateMany(
+          { uploadedBy: targetUserId },
+          { $set: syncFields }
+        ),
+      Object.keys(syncFields).length > 0 &&
+        RemoteJob.updateMany(
+          { uploadedBy: targetUserId },
+          { $set: syncFields }
+        ),
+    ]);
+
+    return res.status(200).json(updatedStudent);
   } catch (error) {
-    res.status(500).json({ message: "An error occurred: " + error.message });
+    return res
+      .status(500)
+      .json({ message: "An error occurred: " + error.message });
   }
 });
 
@@ -533,15 +636,18 @@ dashboard.get("/jobs/:jobId", TokenMiddleware, async (req, res) => {
     const { jobId } = req.params;
     const directJob = await DirectJob.findById(jobId);
     if (directJob) {
-      return res.status(200).json({ directJob });
+      const std = await Students.findById(directJob.uploadedBy);
+      return res.status(200).json({ directJob, avatar: std.avatar });
     }
     const platformJob = await PlatformJob.findById(jobId);
     if (platformJob) {
-      return res.status(200).json({ platformJob });
+      const std = await Students.findById(directJob.uploadedBy);
+      return res.status(200).json({ ...platformJob, avatar: std.avatar });
     }
     const remoteJob = await RemoteJob.findById(jobId);
     if (remoteJob) {
-      return res.status(200).json({ remoteJob });
+      const std = await Students.findById(directJob.uploadedBy);
+      return res.status(200).json({ ...remoteJob, avatar: std.avatar });
     }
     return res.status(404).json({ message: "Job not found." });
   } catch (error) {
@@ -743,13 +849,129 @@ dashboard.delete("/deleteComment/:jobId", TokenMiddleware, async (req, res) => {
   }
 });
 
+// Dashboard Get all CertificateS
+dashboard.get("/certificate", TokenMiddleware, async (req, res) => {
+  try {
+    const { branch } = req.user;
+    const Certificates = await Certificate.find({ branch });
+    return res.status(200).send(Certificates);
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "An error occurred: " + error.message });
+  }
+});
+
+// Dashboard Get Certificate By ID
+dashboard.get(
+  "/certificate/:certificateId",
+  TokenMiddleware,
+  async (req, res) => {
+    try {
+      const { certificateId } = req.params;
+      const certificate = await Certificate.findOne({ _id: certificateId });
+      if (!certificate) {
+        return res.status(404).json({ message: "Certificate not found." });
+      }
+      const std = await Students.findById(certificate.uploadedBy);
+      return res.status(200).json({ certificate, avatar: std.avatar });
+    } catch (error) {
+      return res
+        .status(500)
+        .json({ message: "An error occurred: " + error.message });
+    }
+  }
+);
+
+// Dashboard Delete Certificate
+dashboard.delete(
+  "/certificate/:certificateId",
+  TokenMiddleware,
+  async (req, res) => {
+    try {
+      const { certificateId } = req.params;
+      const certificateObjectId = new ObjectId(certificateId);
+
+      let certificateDeleted = await Certificate.findByIdAndDelete(
+        certificateObjectId
+      );
+
+      if (certificateDeleted) {
+        await Students.updateOne(
+          { "certificates.certificateID": certificateObjectId },
+          { $pull: { certificates: { certificateID: certificateObjectId } } }
+        );
+        return res
+          .status(200)
+          .json({ message: "certificate deleted successfully." });
+      }
+
+      return res.status(404).json({ message: "certificate not found." });
+    } catch (error) {
+      return res
+        .status(500)
+        .json({ message: "An error occurred: " + error.message });
+    }
+  }
+);
+
+// Dashboard Approve Certificate
+dashboard.post(
+  "/certificate/:certificateId",
+  TokenMiddleware,
+  async (req, res) => {
+    try {
+      const { certificateId } = req.params;
+      const certificateObjectId = new ObjectId(certificateId);
+
+      let certificate = await Certificate.findOne(certificateObjectId);
+      if (certificate) {
+        certificate.verified = true;
+        await certificate.save();
+        const std = await Students.findById(certificate.uploadedBy);
+
+        if (std.target != true) {
+          const track = await Tracks.findById(std.trackID);
+          track.numberOfAchievers = track.numberOfAchievers + 1;
+          track.save();
+        }
+
+        await Students.updateOne(
+          { "certificates.certificateID": certificateObjectId },
+          { $set: { "certificates.$.verified": true }, target: true }
+        );
+        const userNoti = await Notifications.findOne({ studentID: std._id });
+        userNoti.notifications.push({
+          content: `We are thrilled to inform you that your ${certificate.Company}'s certificate has been officially approved! Your efforts and commitment have not gone unnoticed, Celebrate this achievement!`,
+          type: "job",
+        });
+        await userNoti.save();
+        jobApprovedEmail(
+          std.fullName,
+          std.email,
+          `${certificate.Company}'s certificate`
+        );
+        return res
+          .status(200)
+          .json({ message: "certificate verified successfully." });
+      }
+
+      return res.status(404).json({ message: "Job not found." });
+    } catch (error) {
+      return res
+        .status(500)
+        .json({ message: "An error occurred: " + error.message });
+    }
+  }
+);
+
 async function addNewAdmin(password) {
   const hashPassword = await hash(password, 10);
   Admins.insertOne({
     fullName: "seif El-islam Abdalaal",
-    branch: "Sohag",
+    branch: "Cairo",
     Avatar: "efe",
-    email: "corosempi@gmail.com",
+    email: "corozanstore@gmail.com",
     password: hashPassword,
     phone: "01150103029",
   });

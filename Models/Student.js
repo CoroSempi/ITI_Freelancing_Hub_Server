@@ -21,6 +21,18 @@ const studentJobSchema = new Schema({
   },
 });
 
+const studentCertificateSchema = new Schema({
+  certificateID: {
+    type: ObjectId,
+    required: true,
+  },
+  verified: {
+    type: Boolean,
+    default: false,
+    required: true,
+  },
+});
+
 const studentSchema = new Schema({
   fullName: {
     type: String,
@@ -110,6 +122,11 @@ const studentSchema = new Schema({
   },
   jobs: {
     type: [studentJobSchema],
+    default: [],
+    required: true,
+  },
+  certificates: {
+    type: [studentCertificateSchema],
     default: [],
     required: true,
   },

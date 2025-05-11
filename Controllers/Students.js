@@ -4,6 +4,7 @@ import { compare, hash } from "bcrypt";
 import { config } from "dotenv";
 import multer from "multer";
 
+import { ObjectId } from "mongodb";
 config();
 
 //Middlewares
@@ -22,6 +23,7 @@ import DirectJob from "../Models/DirectJob.js";
 import PlatformJob from "../Models/PlatformJob.js";
 import RemoteJob from "../Models/RemoteJob.js";
 import Notifications from "../Models/Notification.js";
+import Certificate from "../Models/Certificate.js";
 
 const client = Router();
 
@@ -64,6 +66,30 @@ client.post("/signIn", async (req, res) => {
     } else {
       return res.json({ message: "Student not found" });
     }
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "An error occurred while fetching data" });
+  }
+});
+
+// Client Check Token
+client.get("/checkToken", TokenMiddleware, async (req, res) => {
+  try {
+    res.status(200).json({ message: "Token is valid" });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "An error occurred while fetching data" });
+  }
+});
+
+// Client Check Token
+client.get("/data", TokenMiddleware, async (req, res) => {
+  try {
+    const { id } = req.user;
+    const student = await Students.findOne({ _id: id });
+    res.status(200).json(student);
   } catch (error) {
     return res
       .status(500)
@@ -301,54 +327,64 @@ client.post("/sendMessage", TokenMiddleware, async (req, res) => {
 client.post("/directJob", TokenMiddleware, async (req, res) => {
   try {
     const { id, branch, name } = req.user;
-
-    if (!req.body.costInUSD) {
-      return res.status(400).json({ message: "costInUSD is required." });
+    const { costInUSD, teamMembers = [] } = req.body;
+    if (!costInUSD || typeof costInUSD !== "number") {
+      return res.status(400).json({ message: "Valid costInUSD is required." });
     }
-
-    const studentShare = (function () {
-      if (!req.body.teamMembers) {
-        return req.body.costInUSD;
-      } else {
-        let remain = req.body.costInUSD;
-        req.body.teamMembers.forEach((member) => {
-          remain -= member.studentShare;
-        });
-        return remain;
+    const studentShare = teamMembers.reduce((remain, member) => {
+      const share = Number(member.studentShare || 0);
+      if (isNaN(share)) {
+        throw new Error("Invalid studentShare in teamMembers.");
       }
-    })();
+      return remain - share;
+    }, costInUSD);
 
-    const studentJob = await DirectJob.insertOne({
+    const jobDoc = {
       studentName: name,
       uploadedBy: id,
       studentShare,
       branch,
       ...req.body,
-    });
+    };
 
-    const jobID = studentJob._id;
+    const insertResult = await DirectJob.insertOne(jobDoc);
+    const jobID = insertResult._id;
     console.log(jobID);
-    const std = await Students.findById(id);
-    std.jobs.push({
+
+    const mainStudent = await Students.findById(id);
+    if (!mainStudent) {
+      return res.status(404).json({ message: "Uploading student not found." });
+    }
+
+    mainStudent.jobs.push({
       jobID,
       costInUSD: studentShare,
       type: "Freelancing job with direct contact",
     });
-    await std.save();
+    await mainStudent.save();
 
     await Promise.all(
-      req.body.teamMembers.map(async (member) => {
-        const std = await Students.findById(member.studentID);
-        std.jobs.push({
+      teamMembers.map(async (member) => {
+        const teamStudent = await Students.findById(member.studentID);
+        if (!teamStudent) {
+          console.warn(`Student with ID ${member.studentID} not found.`);
+          return;
+        }
+
+        teamStudent.jobs.push({
           jobID,
           costInUSD: member.studentShare,
           type: "Freelancing job with direct contact",
         });
-        await std.save();
+        await teamStudent.save();
       })
     );
-    return res.status(201).json(studentJob);
+
+    return res
+      .status(201)
+      .json({ message: "Job uploaded successfully", jobID });
   } catch (error) {
+    console.error("Error in /directJob:", error);
     return res
       .status(500)
       .json({ message: "An error occurred: " + error.message });
@@ -359,14 +395,31 @@ client.post("/directJob", TokenMiddleware, async (req, res) => {
 client.delete("/directJob/:jobId", TokenMiddleware, async (req, res) => {
   try {
     const { jobId } = req.params;
+    const userId = req.user.id;
 
-    const result = await DirectJob.deleteOne({ _id: jobId });
-    if (result.deletedCount === 0) {
+    if (!ObjectId.isValid(jobId)) {
+      return res.status(400).json({ message: "Invalid job ID." });
+    }
+
+    const jobObjectId = new ObjectId(jobId);
+
+    const job = await DirectJob.findOne({ _id: jobObjectId });
+    if (!job) {
       return res.status(404).json({ message: "Job not found." });
     }
+
+    if (job.uploadedBy.toString() !== userId) {
+      return res
+        .status(403)
+        .json({ message: "Unauthorized to delete this job." });
+    }
+
+    await DirectJob.deleteOne({ _id: jobObjectId });
     await Students.updateMany({}, { $pull: { jobs: { jobID: jobId } } });
+
     return res.status(200).json({ message: "Job deleted successfully." });
   } catch (error) {
+    console.error("Error deleting job:", error);
     return res
       .status(500)
       .json({ message: "An error occurred: " + error.message });
@@ -379,60 +432,87 @@ client.put("/directJob/:jobId", TokenMiddleware, async (req, res) => {
     const { jobId } = req.params;
     const { id } = req.user;
 
-    const studentShare = (function () {
-      if (!req.body.teamMembers) {
-        return req.body.costInUSD;
-      } else {
-        let remain = req.body.costInUSD;
-        req.body.teamMembers.forEach((member) => {
-          remain -= member.studentShare;
-        });
-        return remain;
+    if (!ObjectId.isValid(jobId)) {
+      return res.status(400).json({ message: "Invalid job ID." });
+    }
+
+    const jobObjectId = new ObjectId(jobId);
+
+    const existingJob = await DirectJob.findOne({ _id: jobObjectId });
+    if (!existingJob) {
+      return res.status(404).json({ message: "Job not found." });
+    }
+
+    if (existingJob.uploadedBy.toString() !== id) {
+      return res
+        .status(403)
+        .json({ message: "Unauthorized to update this job." });
+    }
+
+    const { costInUSD, teamMembers = [] } = req.body;
+
+    const studentShare = teamMembers.reduce((remain, member) => {
+      const share = Number(member.studentShare || 0);
+      if (isNaN(share)) {
+        throw new Error("Invalid team member share value.");
       }
-    })();
+      return remain - share;
+    }, costInUSD);
 
     const updatedJob = await DirectJob.findOneAndUpdate(
-      { _id: jobId },
+      { _id: jobObjectId },
       { $set: { ...req.body, studentShare } },
       { new: true }
     );
 
-    if (!updatedJob) {
-      return res.status(404).json({ message: "Job not found." });
+    const uploader = await Students.findById(id);
+    if (uploader) {
+      const jobIndex = uploader.jobs.findIndex(
+        (job) => job.jobID.toString() === jobId
+      );
+      if (jobIndex !== -1) {
+        uploader.jobs[jobIndex] = {
+          jobID: jobObjectId,
+          costInUSD: studentShare,
+          type: "Freelancing job with direct contact",
+        };
+        await uploader.save();
+      }
     }
 
-    const std = await Students.findById(id);
-    const jobIndex = std.jobs.findIndex(
-      (job) => job.jobID.toString() === jobId
-    );
-
-    if (jobIndex !== -1) {
-      std.jobs[jobIndex] = {
-        jobID: jobId,
-        costInUSD: studentShare,
-        type: "Freelancing job with direct contact",
-      };
-      await std.save();
-    }
     await Promise.all(
-      req.body.teamMembers.map(async (member) => {
-        const std = await Students.findById(member.studentID);
-        const jobIndex = std.jobs.findIndex(
+      teamMembers.map(async (member) => {
+        const teamStd = await Students.findById(member.studentID);
+        if (!teamStd) {
+          console.warn(`Student with ID ${member.studentID} not found.`);
+          return;
+        }
+
+        const index = teamStd.jobs.findIndex(
           (job) => job.jobID.toString() === jobId
         );
 
-        if (jobIndex !== -1) {
-          std.jobs[jobIndex] = {
-            jobID: jobId,
+        if (index !== -1) {
+          teamStd.jobs[index] = {
+            jobID: jobObjectId,
             costInUSD: member.studentShare,
             type: "Freelancing job with direct contact",
           };
-          await std.save();
+        } else {
+          teamStd.jobs.push({
+            jobID: jobObjectId,
+            costInUSD: member.studentShare,
+            type: "Freelancing job with direct contact",
+          });
         }
+
+        await teamStd.save();
       })
     );
+
     return res.status(200).json(updatedJob);
   } catch (error) {
+    console.error("Update job error:", error);
     return res
       .status(500)
       .json({ message: "An error occurred: " + error.message });
@@ -440,27 +520,26 @@ client.put("/directJob/:jobId", TokenMiddleware, async (req, res) => {
 });
 
 // Client Upload Freelancing job on platform
-client.post("/paltformJob", TokenMiddleware, async (req, res) => {
+client.post("/platformJob", TokenMiddleware, async (req, res) => {
   try {
     const { id, branch, name } = req.user;
+    const { costInUSD, teamMembers = [] } = req.body;
 
-    if (!req.body.costInUSD) {
-      return res.status(400).json({ message: "costInUSD is required." });
+    if (!costInUSD || typeof costInUSD !== "number") {
+      return res.status(400).json({ message: "Valid costInUSD is required." });
     }
 
-    const studentShare = (function () {
-      if (!req.body.teamMembers) {
-        return req.body.costInUSD;
-      } else {
-        let remain = req.body.costInUSD;
-        req.body.teamMembers.forEach((member) => {
-          remain -= member.studentShare;
-        });
-        return remain;
-      }
-    })();
+    if (!Array.isArray(teamMembers)) {
+      return res.status(400).json({ message: "teamMembers must be an array." });
+    }
 
-    const studentJob = await PlatformJob.insertOne({
+    const studentShare = teamMembers.reduce((remain, member) => {
+      const share = Number(member.studentShare || 0);
+      if (isNaN(share)) throw new Error("Invalid studentShare value.");
+      return remain - share;
+    }, costInUSD);
+
+    const insertResult = await PlatformJob.insertOne({
       uploadedBy: id,
       studentName: name,
       studentShare,
@@ -468,29 +547,39 @@ client.post("/paltformJob", TokenMiddleware, async (req, res) => {
       ...req.body,
     });
 
-    const jobID = studentJob._id;
-    console.log(jobID);
-    const std = await Students.findById(id);
-    std.jobs.push({
+    const jobID = insertResult._id;
+
+    const uploader = await Students.findById(id);
+    if (!uploader) {
+      return res.status(404).json({ message: "Uploading student not found." });
+    }
+
+    uploader.jobs.push({
       jobID,
       costInUSD: studentShare,
-      type: "Freelancing job on platform",
+      type: "Freelancing job on platform",
     });
-    await std.save();
+    await uploader.save();
 
     await Promise.all(
-      req.body.teamMembers.map(async (member) => {
-        const std = await Students.findById(member.studentID);
-        std.jobs.push({
+      teamMembers.map(async (member) => {
+        const teammate = await Students.findById(member.studentID);
+        if (!teammate) {
+          console.warn(`Student with ID ${member.studentID} not found.`);
+          return;
+        }
+        teammate.jobs.push({
           jobID,
           costInUSD: member.studentShare,
-          type: "Freelancing job on platform",
+          type: "Freelancing job on platform",
         });
-        await std.save();
+        await teammate.save();
       })
     );
-    return res.status(201).json(studentJob);
+
+    return res.status(201).json({ message: "Job created successfully", jobID });
   } catch (error) {
+    console.error("Platform job upload error:", error);
     return res
       .status(500)
       .json({ message: "An error occurred: " + error.message });
@@ -498,17 +587,33 @@ client.post("/paltformJob", TokenMiddleware, async (req, res) => {
 });
 
 // Client Delete Freelancing job on platform
-client.delete("/paltformJob/:jobId", TokenMiddleware, async (req, res) => {
+client.delete("/platformJob/:jobId", TokenMiddleware, async (req, res) => {
   try {
     const { jobId } = req.params;
+    const userId = req.user.id;
 
-    const result = await PlatformJob.deleteOne({ _id: jobId });
-    if (result.deletedCount === 0) {
+    if (!ObjectId.isValid(jobId)) {
+      return res.status(400).json({ message: "Invalid job ID." });
+    }
+    const jobObjectId = new ObjectId(jobId);
+
+    const job = await PlatformJob.findOne({ _id: jobObjectId });
+    if (!job) {
       return res.status(404).json({ message: "Job not found." });
     }
-    await Students.updateMany({}, { $pull: { jobs: { jobID: jobId } } });
+
+    if (job.uploadedBy.toString() !== userId) {
+      return res
+        .status(403)
+        .json({ message: "Unauthorized to delete this job." });
+    }
+
+    await PlatformJob.deleteOne({ _id: jobObjectId });
+    await Students.updateMany({}, { $pull: { jobs: { jobID: jobObjectId } } });
+
     return res.status(200).json({ message: "Job deleted successfully." });
   } catch (error) {
+    console.error("Delete job error:", error);
     return res
       .status(500)
       .json({ message: "An error occurred: " + error.message });
@@ -516,65 +621,102 @@ client.delete("/paltformJob/:jobId", TokenMiddleware, async (req, res) => {
 });
 
 // Client Update Freelancing job on platform
-client.put("/paltformJob/:jobId", TokenMiddleware, async (req, res) => {
+client.put("/platformJob/:jobId", TokenMiddleware, async (req, res) => {
   try {
     const { jobId } = req.params;
     const { id } = req.user;
+    const { costInUSD, teamMembers = [] } = req.body;
 
-    const studentShare = (function () {
-      if (!req.body.teamMembers) {
-        return req.body.costInUSD;
-      } else {
-        let remain = req.body.costInUSD;
-        req.body.teamMembers.forEach((member) => {
-          remain -= member.studentShare;
-        });
-        return remain;
-      }
-    })();
+    if (!ObjectId.isValid(jobId)) {
+      return res.status(400).json({ message: "Invalid job ID." });
+    }
 
+    if (typeof costInUSD !== "number" || costInUSD <= 0) {
+      return res.status(400).json({ message: "Valid costInUSD is required." });
+    }
+
+    const jobObjectId = new ObjectId(jobId);
+
+    const existingJob = await PlatformJob.findOne({ _id: jobObjectId });
+    if (!existingJob) {
+      return res.status(404).json({ message: "Job not found." });
+    }
+
+    if (existingJob.uploadedBy.toString() !== id) {
+      return res
+        .status(403)
+        .json({ message: "Unauthorized to update this job." });
+    }
+
+    // Calculate studentShare
+    const studentShare = Array.isArray(teamMembers)
+      ? teamMembers.reduce((remain, member) => {
+          const share = Number(member.studentShare || 0);
+          if (isNaN(share))
+            throw new Error("Invalid studentShare in teamMembers.");
+          return remain - share;
+        }, costInUSD)
+      : costInUSD;
+
+    // Update job
     const updatedJob = await PlatformJob.findOneAndUpdate(
-      { _id: jobId },
+      { _id: jobObjectId },
       { $set: { ...req.body, studentShare } },
       { new: true }
     );
 
-    if (!updatedJob) {
-      return res.status(404).json({ message: "Job not found." });
-    }
-
-    const std = await Students.findById(id);
-    const jobIndex = std.jobs.findIndex(
-      (job) => job.jobID.toString() === jobId
-    );
-
-    if (jobIndex !== -1) {
-      std.jobs[jobIndex] = {
-        jobID: jobId,
+    // Update uploader's job entry
+    const uploader = await Students.findById(id);
+    if (uploader) {
+      const jobIndex = uploader.jobs.findIndex(
+        (job) => job.jobID.toString() === jobId
+      );
+      const updatedEntry = {
+        jobID: jobObjectId,
         costInUSD: studentShare,
-        type: "Freelancing job on platform",
+        type: "Freelancing job on platform",
       };
-      await std.save();
+
+      if (jobIndex !== -1) {
+        uploader.jobs[jobIndex] = updatedEntry;
+      } else {
+        uploader.jobs.push(updatedEntry);
+      }
+      await uploader.save();
     }
+
+    // Update team members' job entries
     await Promise.all(
-      req.body.teamMembers.map(async (member) => {
-        const std = await Students.findById(member.studentID);
-        const jobIndex = std.jobs.findIndex(
+      teamMembers.map(async (member) => {
+        const teammate = await Students.findById(member.studentID);
+        if (!teammate) {
+          console.warn(`Student with ID ${member.studentID} not found.`);
+          return;
+        }
+
+        const entry = {
+          jobID: jobObjectId,
+          costInUSD: member.studentShare,
+          type: "Freelancing job on platform",
+        };
+
+        const jobIndex = teammate.jobs.findIndex(
           (job) => job.jobID.toString() === jobId
         );
 
         if (jobIndex !== -1) {
-          std.jobs[jobIndex] = {
-            jobID: jobId,
-            costInUSD: member.studentShare,
-            type: "Freelancing job on platform",
-          };
-          await std.save();
+          teammate.jobs[jobIndex] = entry;
+        } else {
+          teammate.jobs.push(entry);
         }
+
+        await teammate.save();
       })
     );
+
     return res.status(200).json(updatedJob);
   } catch (error) {
+    console.error("Update platform job error:", error);
     return res
       .status(500)
       .json({ message: "An error occurred: " + error.message });
@@ -585,24 +727,34 @@ client.put("/paltformJob/:jobId", TokenMiddleware, async (req, res) => {
 client.post("/remoteJob", TokenMiddleware, async (req, res) => {
   try {
     const { id, branch, name } = req.user;
+    const { paymentInUSD } = req.body;
 
-    const studentJob = await RemoteJob.insertOne({
+    if (typeof paymentInUSD !== "number" || paymentInUSD <= 0) {
+      return res
+        .status(400)
+        .json({ message: "Valid paymentInUSD is required." });
+    }
+
+    const insertResult = await RemoteJob.insertOne({
       uploadedBy: id,
       studentName: name,
       branch,
       ...req.body,
     });
 
-    const jobID = studentJob._id;
+    const jobID = insertResult._id;
+
     const std = await Students.findById(id);
+    if (!std) return res.status(404).json({ message: "Student not found." });
+
     std.jobs.push({
       jobID,
-      costInUSD: req.body.paymentInUSD,
+      costInUSD: paymentInUSD,
       type: "Remote monthly job",
     });
     await std.save();
 
-    return res.status(201).json(studentJob);
+    return res.status(201).json({ message: "Job created", jobID });
   } catch (error) {
     return res
       .status(500)
@@ -664,6 +816,133 @@ client.put("/remoteJob/:jobId", TokenMiddleware, async (req, res) => {
       .json({ message: "An error occurred: " + error.message });
   }
 });
+
+// Client Upload Certificate
+client.post("/certificate", TokenMiddleware, async (req, res) => {
+  try {
+    const { id, branch, name } = req.user;
+
+    const insertResult = await Certificate.insertOne({
+      uploadedBy: id,
+      studentName: name,
+      branch,
+      ...req.body,
+    });
+
+    const certificateID = insertResult._id;
+
+    const std = await Students.findById(id);
+    if (!std) {
+      return res.status(404).json({ message: "Student not found." });
+    }
+
+    std.certificates.push({ certificateID });
+    await std.save();
+
+    return res
+      .status(201)
+      .json({ message: "Certificate uploaded", certificateID });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "An error occurred: " + error.message });
+  }
+});
+
+// Client Get Certificate By ID
+client.get("/certificate/:certificateId", TokenMiddleware, async (req, res) => {
+  try {
+    const { certificateId } = req.params;
+
+    if (!ObjectId.isValid(certificateId)) {
+      return res.status(400).json({ message: "Invalid certificate ID." });
+    }
+
+    const cert = await Certificate.findOne({
+      _id: new ObjectId(certificateId),
+    });
+
+    if (!cert)
+      return res.status(404).json({ message: "Certificate not found." });
+
+    if (cert.uploadedBy.toString() !== req.user.id) {
+      return res
+        .status(403)
+        .json({ message: "Unauthorized to access this certificate." });
+    }
+
+    return res.status(200).json(cert);
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "An error occurred: " + error.message });
+  }
+});
+
+// Client Get All Certificates
+client.get("/certificate", TokenMiddleware, async (req, res) => {
+  try {
+    const { id } = req.user;
+    const certificates = await Certificate.find({ uploadedBy: id });
+    if (!certificates) {
+      return res.status(404).json({ message: "Certificate not found." });
+    }
+    return res.status(200).json(certificates);
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "An error occurred: " + error.message });
+  }
+});
+
+// Client Update Certificate
+client.put("/certificate/:certificateId", TokenMiddleware, async (req, res) => {
+  try {
+    const { certificateId } = req.params;
+
+    const updatedCertificate = await Certificate.findOneAndUpdate(
+      { _id: certificateId },
+      { $set: { ...req.body } },
+      { new: true }
+    );
+
+    if (!updatedCertificate) {
+      return res.status(404).json({ message: "Certificate not found." });
+    }
+
+    return res.status(200).json(updatedCertificate);
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "An error occurred: " + error.message });
+  }
+});
+
+// Client Delete Certificate
+client.delete(
+  "/certificate/:certificateId",
+  TokenMiddleware,
+  async (req, res) => {
+    try {
+      const { certificateId } = req.params;
+      const result = await Certificate.deleteOne({ _id: certificateId });
+      if (result.deletedCount === 0) {
+        return res.status(404).json({ message: "certificate not found." });
+      }
+      await Students.updateOne(
+        { _id: req.user.id },
+        { $pull: { certificates: { certificateID: certificateId } } }
+      );
+      return res
+        .status(200)
+        .json({ message: "Certificate deleted successfully." });
+    } catch (error) {
+      return res
+        .status(500)
+        .json({ message: "An error occurred: " + error.message });
+    }
+  }
+);
 
 // Client Get Freelancing job By ID
 client.get("/jobs/:jobId", TokenMiddleware, async (req, res) => {
@@ -727,7 +1006,8 @@ client.get("/jobs", TokenMiddleware, async (req, res) => {
 
         return {
           jobData: jobDetails,
-          canEdit: jobDetails && jobDetails.uploadedBy == id,
+          canEdit:
+            jobDetails && jobDetails.uploadedBy == id && !jobDetails.verified,
         };
       })
     );
