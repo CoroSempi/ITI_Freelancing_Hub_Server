@@ -849,7 +849,7 @@ dashboard.delete("/deleteComment/:jobId", TokenMiddleware, async (req, res) => {
   }
 });
 
-// Dashboard Get all CertificateS
+// Dashboard Get all Certificates
 dashboard.get("/certificate", TokenMiddleware, async (req, res) => {
   try {
     const { branch } = req.user;

@@ -960,7 +960,7 @@ client.get("/jobs/:jobId", TokenMiddleware, async (req, res) => {
         jobData: directJob,
         canEdit: directJob.uploadedBy == id ? true : false,
       });
-    } else if (job.type === "Freelancing job on platform") {
+    } else if (job.type === "Freelancing job on platform") {
       const platformJob = await PlatformJob.findById(job.jobID);
       return res.status(200).json({
         jobData: platformJob,
@@ -997,9 +997,9 @@ client.get("/jobs", TokenMiddleware, async (req, res) => {
         let jobDetails;
         if (job.type === "Freelancing job with direct contact") {
           jobDetails = await DirectJob.findById(job.jobID);
-        } else if (job.type === "Freelancing job on platform") {
-          console.log("ewwe");
+        } else if (job.type === "Freelancing job on platform") {
           jobDetails = await PlatformJob.findById(job.jobID);
+          console.log(jobDetails);
         } else if (job.type === "Remote monthly job") {
           jobDetails = await RemoteJob.findById(job.jobID);
         }
