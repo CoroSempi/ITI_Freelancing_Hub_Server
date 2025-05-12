@@ -56,9 +56,13 @@ client.post("/signIn", async (req, res) => {
           process.env.TOKEN_ACCESS,
           { expiresIn: "12h" }
         );
+
+        const studentObj = student.toObject();
+        delete studentObj.password;
+
         return res.status(200).json({
           AccessToken: token,
-          studentData: student,
+          studentData: studentObj,
         });
       } else {
         return res.json({ message: "Invalid password" });

@@ -636,18 +636,19 @@ dashboard.get("/jobs/:jobId", TokenMiddleware, async (req, res) => {
     const { jobId } = req.params;
     const directJob = await DirectJob.findById(jobId);
     if (directJob) {
+      console.log(directJob);
       const std = await Students.findById(directJob.uploadedBy);
       return res.status(200).json({ directJob, avatar: std.avatar });
     }
     const platformJob = await PlatformJob.findById(jobId);
     if (platformJob) {
-      const std = await Students.findById(directJob.uploadedBy);
-      return res.status(200).json({ ...platformJob, avatar: std.avatar });
+      const std = await Students.findById(platformJob.uploadedBy);
+      return res.status(200).json({ platformJob, avatar: std.avatar });
     }
     const remoteJob = await RemoteJob.findById(jobId);
     if (remoteJob) {
-      const std = await Students.findById(directJob.uploadedBy);
-      return res.status(200).json({ ...remoteJob, avatar: std.avatar });
+      const std = await Students.findById(remoteJob.uploadedBy);
+      return res.status(200).json({ remoteJob, avatar: std.avatar });
     }
     return res.status(404).json({ message: "Job not found." });
   } catch (error) {
