@@ -319,7 +319,12 @@ dashboard.post(
       });
       const hashed = await hash("12345678", 10);
       trackData = trackData.map((std) => {
-        return { ...std, trackID: newTrack.id, password: hashed };
+        return {
+          ...std,
+          trackID: newTrack.id,
+          password: hashed,
+          trackName: newTrack.trackName,
+        };
       });
       Students.insertMany(trackData).then((students) => {
         students.forEach(async (std) => {
