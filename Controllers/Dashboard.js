@@ -303,6 +303,11 @@ dashboard.post(
         return res.status(400).json({ message: "Please upload an Excel file" });
       }
 
+      const existingTrack = await Tracks.findOne({ trackName, branch });
+      if (existingTrack) {
+        return res.status(400).json({ message: "Track already exists" });
+      }
+
       let trackData = await handleExcelSheet(sheet.buffer);
       trackData = trackData.filter((std) => std.university && true);
       trackData = trackData.map(({ "#": _, ...rest }) => rest);

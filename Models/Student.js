@@ -51,7 +51,6 @@ const studentSchema = new Schema({
   personalID: {
     type: String,
     required: true,
-    unique: true,
   },
   university: {
     type: String,
@@ -88,7 +87,6 @@ const studentSchema = new Schema({
   email: {
     type: String,
     required: true,
-    unique: true,
     trim: true,
   },
   password: {
