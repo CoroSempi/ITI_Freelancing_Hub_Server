@@ -139,7 +139,7 @@ client.post("/verifyCode", async (req, res) => {
     }
     const student = await Students.findOne({ email: email });
     if (!student) {
-      return res.status(409).json({ message: "Admin not found." });
+      return res.status(409).json({ message: "Student not found." });
     } else {
       if (student.verificationCode == code) {
         // Generate token

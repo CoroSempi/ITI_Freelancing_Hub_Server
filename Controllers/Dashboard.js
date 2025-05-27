@@ -29,6 +29,7 @@ import DirectJob from "../Models/DirectJob.js";
 import RemoteJob from "../Models/RemoteJob.js";
 import PlatformJob from "../Models/PlatformJob.js";
 import Certificate from "../Models/Certificate.js";
+import sendMessage from "../Middlewares/messageEmail.js";
 
 const dashboard = Router();
 
@@ -390,7 +391,6 @@ dashboard.delete("/Track/:id", async (req, res) => {
     await Students.deleteMany({ trackID: TrackID });
 
     for (const std of students) {
-      console.log(std._id);
       await Notifications.deleteOne({ studentID: std._id });
       await Chats.deleteOne({ studentID: std._id });
       await DirectJob.deleteMany({ uploadedBy: std._id });
@@ -409,7 +409,6 @@ dashboard.delete("/Track/:id", async (req, res) => {
 // Dashboard Search Users
 dashboard.get("/search", TokenMiddleware, async (req, res) => {
   try {
-    console.log(req.user.branch);
     const keyword = req.query.keyword;
     const searchResults = await Students.find({
       fullName: { $regex: keyword, $options: "i" },
@@ -438,7 +437,6 @@ dashboard.get("/getUserByID/:id", TokenMiddleware, async (req, res) => {
 // Dashboard Update User By Id
 dashboard.put("/UpdateUser/:id", TokenMiddleware, async (req, res) => {
   try {
-    const { id: userIdFromToken } = req.user;
     const { id: targetUserId } = req.params;
 
     const student = await Students.findById(targetUserId);
@@ -446,15 +444,37 @@ dashboard.put("/UpdateUser/:id", TokenMiddleware, async (req, res) => {
       return res.status(404).json({ message: "Student not found" });
     }
 
+    if (student.trackName != req.body.trackName) {
+      const currentTrack = await Tracks.findOne({ _id: student.trackID });
+      const newTrack = await Tracks.findOne({ trackName: req.body.trackName });
+
+      if (currentTrack && newTrack) {
+        currentTrack.numberOfStudent = currentTrack.numberOfStudent - 1;
+        newTrack.numberOfStudent = newTrack.numberOfStudent + 1;
+        if (student.target) {
+          currentTrack.numberOfAchievers = currentTrack.numberOfAchievers - 1;
+          newTrack.numberOfAchievers = newTrack.numberOfAchievers + 1;
+        }
+        await Promise.all([currentTrack.save(), newTrack.save()]);
+        await Students.updateOne(
+          { _id: targetUserId },
+          { $set: { trackID: newTrack._id, trackName: newTrack.trackName } }
+        );
+        await Chats.updateOne(
+          { studentID: targetUserId },
+          { $set: { track: newTrack.trackName } }
+        );
+      }
+    }
+
     const allowedFields = [
-      "avatar",
       "fullName",
-      "phone",
       "email",
-      "address",
-      "governorate",
+      "phone",
+      "personalID",
       "graduationGrade",
-      "branch",
+      "faculty",
+      "university",
     ];
 
     const updates = {};
@@ -584,7 +604,7 @@ dashboard.get("/getChat/:id", TokenMiddleware, async (req, res) => {
     const { id } = req.params;
 
     const studentChat = await Chats.findOne({ studentID: id });
-    console.log(studentChat);
+
     if (studentChat) {
       studentChat.ChatRoom = studentChat.ChatRoom.map((message) => {
         if (message.received == false) {
@@ -610,9 +630,13 @@ dashboard.post("/sendMessage", TokenMiddleware, async (req, res) => {
   try {
     const { content, studentID } = req.body;
     const studentChat = await Chats.findOne({ studentID });
-    if (studentChat) {
+    const student = await Students.findOne({ _id: studentID });
+    if (studentChat && student) {
       studentChat.ChatRoom.push({ content, received: true });
       studentChat.save();
+
+      sendMessage(student.fullName, student.email);
+
       return res.status(201).send(studentChat);
     } else {
       return res.status(404).json({ message: "Chat not found" });
@@ -646,7 +670,6 @@ dashboard.get("/jobs/:jobId", TokenMiddleware, async (req, res) => {
     const { jobId } = req.params;
     const directJob = await DirectJob.findById(jobId);
     if (directJob) {
-      console.log(directJob);
       const std = await Students.findById(directJob.uploadedBy);
       return res.status(200).json({ directJob, avatar: std.avatar });
     }
@@ -721,12 +744,12 @@ dashboard.post("/approveJob/:jobId", TokenMiddleware, async (req, res) => {
       await job.save();
       const std = await Students.findById(job.uploadedBy);
       let stds = await Students.find({ "jobs.jobID": jobObjectId });
-      console.log(stds);
+
       stds.forEach(async (std) => {
         if (std.target != true) {
           const track = await Tracks.findById(std.trackID);
           track.numberOfAchievers = track.numberOfAchievers + 1;
-          console.log(track.numberOfAchievers);
+
           track.save();
         }
       });
@@ -976,13 +999,299 @@ dashboard.post(
   }
 );
 
+//Report Data
+dashboard.get("/reportData", TokenMiddleware, async (req, res) => {
+  try {
+    const branches = [];
+    const rounds = [];
+    const tracks = [];
+    const admins = await Admins.find({});
+    const trackss = await Tracks.find({});
+
+    admins.forEach((admin) => {
+      if (!branches.includes(admin.branch)) {
+        branches.push(admin.branch);
+      }
+    });
+
+    trackss.forEach((track) => {
+      if (!rounds.includes(track.startDate)) {
+        rounds.push(track.startDate);
+      }
+      if (!tracks.includes(track.trackName)) {
+        tracks.push(track.trackName);
+      }
+    });
+
+    res.status(200).json({
+      branches,
+      rounds,
+      tracks,
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "An error occurred: " + error.message });
+  }
+});
+
+//status Report
+dashboard.get(
+  "/statusReport/:branch/:round/:trackName",
+  TokenMiddleware,
+  async (req, res) => {
+    try {
+      const { branch, round, trackName } = req.params;
+
+      const track = await Tracks.findOne({
+        branch,
+        startDate: round,
+        trackName,
+      });
+      if (!track) {
+        return res.status(404).json({ message: "Track not found" });
+      }
+
+      const students = await Students.find({ trackID: track._id });
+
+      let totalJobsArr = [];
+      students.forEach((std) => {
+        if (Array.isArray(std.jobs)) {
+          totalJobsArr = totalJobsArr.concat(std.jobs);
+        }
+      });
+
+      let direct = 0;
+      let platform = 0;
+      let remote = 0;
+      let verifiedJobs = 0;
+      let totalprofit = 0;
+
+      const countedTypeJobIDs = new Set();
+
+      totalJobsArr.forEach((job) => {
+        const jobIDStr = job.jobID?.toString() || job._id?.toString();
+
+        if (jobIDStr && !countedTypeJobIDs.has(jobIDStr)) {
+          countedTypeJobIDs.add(jobIDStr);
+
+          if (job.type === "Freelancing job with direct contact") direct++;
+          else if (job.type === "Freelancing job on platform") platform++;
+          else if (job.type === "Remote monthly job") remote++;
+        }
+
+        if (job.verified === true) {
+          verifiedJobs++;
+          totalprofit += job.costInUSD || 0;
+        }
+      });
+
+      const totalJobs = countedTypeJobIDs.size;
+
+      return res.status(200).json({
+        totalStudents: track.numberOfStudent,
+        totalAchievers: track.numberOfAchievers,
+        percentage:
+          (
+            (track.numberOfAchievers / track.numberOfStudent) * 100 || 0
+          ).toFixed(2) + "%",
+        totalJobs,
+        verifiedJobs,
+        direct: totalJobs ? ((direct / totalJobs) * 100).toFixed(2) : "0.00",
+        platform: totalJobs
+          ? ((platform / totalJobs) * 100).toFixed(2)
+          : "0.00",
+        remote: totalJobs ? ((remote / totalJobs) * 100).toFixed(2) : "0.00",
+        totalprofit,
+      });
+    } catch (error) {
+      return res
+        .status(500)
+        .json({ message: "An error occurred: " + error.message });
+    }
+  }
+);
+
+//final Report
+dashboard.get(
+  "/finalReport/:branch/:round",
+  TokenMiddleware,
+  async (req, res) => {
+    try {
+      const { branch, round } = req.params;
+
+      const tracks = await Tracks.find({ branch, startDate: round });
+      if (!tracks.length) {
+        return res.status(404).json({ message: "No tracks found" });
+      }
+
+      const finalReport = [];
+
+      for (const track of tracks) {
+        const students = await Students.find({ trackID: track._id });
+
+        let totalJobsArr = [];
+        students.forEach((std) => {
+          if (Array.isArray(std.jobs)) {
+            totalJobsArr = totalJobsArr.concat(std.jobs);
+          }
+        });
+
+        let direct = 0;
+        let platform = 0;
+        let remote = 0;
+        let verifiedJobs = 0;
+        let totalprofit = 0;
+
+        const countedJobIDs = new Set();
+        const countedVerifiedJobIDs = new Set();
+
+        totalJobsArr.forEach((job) => {
+          const jobIDStr = job.jobID?.toString() || job._id?.toString();
+
+          if (jobIDStr && !countedJobIDs.has(jobIDStr)) {
+            countedJobIDs.add(jobIDStr);
+
+            if (job.type === "Freelancing job with direct contact") direct++;
+            else if (job.type === "Freelancing job on platform") platform++;
+            else if (job.type === "Remote monthly job") remote++;
+          }
+
+          if (
+            job.verified === true &&
+            jobIDStr &&
+            !countedVerifiedJobIDs.has(jobIDStr)
+          ) {
+            countedVerifiedJobIDs.add(jobIDStr);
+            verifiedJobs++;
+          }
+
+          if (job.verified === true) {
+            totalprofit += job.costInUSD || 0;
+          }
+        });
+
+        const totalJobs = countedJobIDs.size;
+
+        finalReport.push({
+          trackName: track.trackName,
+          totalStudents: track.numberOfStudent,
+          totalAchievers: track.numberOfAchievers,
+          percentage:
+            (
+              (track.numberOfAchievers / track.numberOfStudent) * 100 || 0
+            ).toFixed(0) + "%",
+          totalJobs,
+          verifiedJobs,
+          direct: totalJobs
+            ? ((direct / totalJobs) * 100).toFixed(0) + "%"
+            : "0.00%",
+          platform: totalJobs
+            ? ((platform / totalJobs) * 100).toFixed(0) + "%"
+            : "0.00%",
+          remote: totalJobs
+            ? ((remote / totalJobs) * 100).toFixed(0) + "%"
+            : "0.00%",
+          totalprofit,
+        });
+      }
+
+      return res.status(200).json(finalReport);
+    } catch (error) {
+      return res
+        .status(500)
+        .json({ message: "An error occurred: " + error.message });
+    }
+  }
+);
+
+//earnings Report
+dashboard.get("/earningsReport/:round", TokenMiddleware, async (req, res) => {
+  try {
+    const { round } = req.params;
+
+    const tracks = await Tracks.find({ startDate: round });
+    if (!tracks.length) {
+      return res
+        .status(404)
+        .json({ message: "No tracks found for this round" });
+    }
+
+    let totalStudents = 0;
+    let totalAchievers = 0;
+    let totalJobsArr = [];
+    let direct = 0;
+    let platform = 0;
+    let remote = 0;
+    let verifiedJobs = 0;
+    let totalprofit = 0;
+
+    for (const track of tracks) {
+      const students = await Students.find({ trackID: track._id });
+      totalStudents += track.numberOfStudent || 0;
+      totalAchievers += track.numberOfAchievers || 0;
+
+      students.forEach((std) => {
+        if (Array.isArray(std.jobs)) {
+          totalJobsArr = totalJobsArr.concat(std.jobs);
+        }
+      });
+    }
+
+    const countedJobIDs = new Set();
+
+    totalJobsArr.forEach((job) => {
+      if (job.verified === true) {
+        totalprofit += job.costInUSD || 0;
+
+        const jobIDStr = job.jobID?.toString() || job._id?.toString();
+        if (jobIDStr && !countedJobIDs.has(jobIDStr)) {
+          countedJobIDs.add(jobIDStr);
+          verifiedJobs++;
+
+          if (job.type === "Freelancing job with direct contact") direct++;
+          else if (job.type === "Freelancing job on platform") platform++;
+          else if (job.type === "Remote monthly job") remote++;
+        }
+      }
+    });
+
+    const totalJobs = totalJobsArr.length;
+
+    return res.status(200).json({
+      round,
+      totalTracks: tracks.length,
+      totalStudents,
+      totalAchievers,
+      percentage:
+        ((totalAchievers / totalStudents) * 100 || 0).toFixed(2) + "%",
+      totalJobs,
+      verifiedJobs,
+      direct: verifiedJobs
+        ? ((direct / verifiedJobs) * 100).toFixed(2)
+        : "0.00",
+      platform: verifiedJobs
+        ? ((platform / verifiedJobs) * 100).toFixed(2)
+        : "0.00",
+      remote: verifiedJobs
+        ? ((remote / verifiedJobs) * 100).toFixed(2)
+        : "0.00",
+      totalprofit,
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "An error occurred: " + error.message });
+  }
+});
+
 async function addNewAdmin(password) {
   const hashPassword = await hash(password, 10);
   Admins.insertOne({
-    fullName: "seif El-islam Abdalaal",
-    branch: "Cairo",
+    fullName: "Seif 2",
+    branch: "Smart",
     Avatar: "efe",
-    email: "corozanstore@gmail.com",
+    email: "corozan07@gmail.com",
     password: hashPassword,
     phone: "01150103029",
   });
