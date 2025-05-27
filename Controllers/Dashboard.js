@@ -295,8 +295,9 @@ dashboard.post(
       const sheet = req.file;
 
       if (!trackName || !sheet || !startDate) {
-        return res.status(400).json({ message: "All Fileds are required" });
+        return res.status(400).json({ message: "All fields are required" });
       }
+
       if (
         !sheet.mimetype.includes("excel") &&
         !sheet.mimetype.includes("spreadsheet")
@@ -312,34 +313,64 @@ dashboard.post(
       let trackData = await handleExcelSheet(sheet.buffer);
       trackData = trackData.filter((std) => std.university && true);
       trackData = trackData.map(({ "#": _, ...rest }) => rest);
-      let newTrack = await Tracks.insertOne({
+
+      const hashed = await hash("12345678", 10);
+      const tempTrackId = new ObjectId();
+      const previewData = [];
+
+      console.log(tempTrackId);
+
+      for (const std of trackData) {
+        const studentDoc = new Students({
+          ...std,
+          branch,
+          password: hashed,
+          trackName,
+          trackID: tempTrackId,
+        });
+
+        const validationError = studentDoc.validateSync();
+        if (validationError) {
+          return res.status(400).json({
+            message: "Student schema validation failed",
+            errors: validationError.errors,
+            student: std,
+          });
+        }
+
+        previewData.push(studentDoc.toObject());
+      }
+
+      const newTrack = await Tracks.insertOne({
         branch,
-        numberOfStudent: trackData.length,
+        numberOfStudent: previewData.length,
         trackName,
         startDate,
       });
-      const hashed = await hash("12345678", 10);
-      trackData = trackData.map((std) => {
-        return {
-          ...std,
-          trackID: newTrack.id,
-          password: hashed,
-          trackName: newTrack.trackName,
-        };
-      });
-      Students.insertMany(trackData).then((students) => {
-        students.forEach(async (std) => {
-          await Notifications.insertOne({ studentID: std._id });
-          await Chats.insertOne({
+
+      const studentsWithTrack = previewData.map((std) => ({
+        ...std,
+        trackID: newTrack._id,
+      }));
+
+      const students = await Students.insertMany(studentsWithTrack);
+
+      const notificationAndChatTasks = students.map((std) =>
+        Promise.all([
+          Notifications.insertOne({ studentID: std._id }),
+          Chats.insertOne({
             studentID: std._id,
             branch: std.branch,
             fullName: std.fullName,
             track: std.trackName,
-          });
-        });
-        return res.status(200).json({ message: "Track added successfully." });
-      });
+          }),
+        ])
+      );
+      await Promise.all(notificationAndChatTasks);
+
+      return res.status(200).json({ message: "Track added successfully." });
     } catch (error) {
+      console.error("Error while adding track:", error);
       return res
         .status(500)
         .json({ message: "An error occurred: " + error.message });
