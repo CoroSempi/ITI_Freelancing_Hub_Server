@@ -773,27 +773,37 @@ dashboard.post("/approveJob/:jobId", TokenMiddleware, async (req, res) => {
     if (job) {
       job.verified = true;
       await job.save();
+
       const std = await Students.findById(job.uploadedBy);
-      let stds = await Students.find({ "jobs.jobID": jobObjectId });
+      const stds = await Students.find({ "jobs.jobID": jobObjectId });
 
-      stds.forEach(async (std) => {
-        if (std.target != true) {
-          const track = await Tracks.findById(std.trackID);
-          track.numberOfAchievers = track.numberOfAchievers + 1;
-
-          track.save();
+      const updatedTracks = new Set();
+      for (const std of stds) {
+        if (std.target !== true && std.trackID) {
+          const trackIdStr = std.trackID.toString();
+          if (!updatedTracks.has(trackIdStr)) {
+            const track = await Tracks.findById(std.trackID);
+            if (track) {
+              track.numberOfAchievers = (track.numberOfAchievers || 0) + 1;
+              await track.save();
+              updatedTracks.add(trackIdStr);
+            }
+          }
         }
-      });
+      }
+
       await Students.updateMany(
         { "jobs.jobID": jobObjectId },
         { $set: { "jobs.$.verified": true }, target: true }
       );
+
       const userNoti = await Notifications.findOne({ studentID: std._id });
       userNoti.notifications.push({
         content: `We are thrilled to inform you that your ${job.jobTitle} has been officially approved! Your efforts and commitment have not gone unnoticed, and we look forward to seeing your contributions in this new role. Celebrate this achievement!`,
         type: "job",
       });
       await userNoti.save();
+
       jobApprovedEmail(std.fullName, std.email, job.jobTitle);
       return res.status(200).json({ message: "Job verified successfully." });
     }
@@ -802,17 +812,20 @@ dashboard.post("/approveJob/:jobId", TokenMiddleware, async (req, res) => {
     if (job) {
       job.verified = true;
       await job.save();
+
       const std = await Students.findById(job.uploadedBy);
       await Students.updateMany(
         { "jobs.jobID": jobObjectId },
         { $set: { "jobs.$.verified": true }, target: true }
       );
+
       const userNoti = await Notifications.findOne({ studentID: std._id });
       userNoti.notifications.push({
         content: `We are thrilled to inform you that your ${job.jobTitle} has been officially approved! Your efforts and commitment have not gone unnoticed, and we look forward to seeing your contributions in this new role. Celebrate this achievement!`,
         type: "job",
       });
       await userNoti.save();
+
       jobApprovedEmail(std.fullName, std.email, job.jobTitle);
       return res.status(200).json({ message: "Job verified successfully." });
     }
@@ -821,17 +834,20 @@ dashboard.post("/approveJob/:jobId", TokenMiddleware, async (req, res) => {
     if (job) {
       job.verified = true;
       await job.save();
+
       const std = await Students.findById(job.uploadedBy);
       await Students.updateMany(
         { "jobs.jobID": jobObjectId },
         { $set: { "jobs.$.verified": true }, target: true }
       );
+
       const userNoti = await Notifications.findOne({ studentID: std._id });
       userNoti.notifications.push({
         content: `We are thrilled to inform you that your ${job.jobTitle} has been officially approved! Your efforts and commitment have not gone unnoticed, and we look forward to seeing your contributions in this new role. Celebrate this achievement!`,
         type: "job",
       });
       await userNoti.save();
+
       jobApprovedEmail(std.fullName, std.email, job.jobTitle);
       return res.status(200).json({ message: "Job verified successfully." });
     }
