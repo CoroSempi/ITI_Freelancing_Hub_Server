@@ -769,25 +769,38 @@ dashboard.post("/approveJob/:jobId", TokenMiddleware, async (req, res) => {
     const { jobId } = req.params;
     const jobObjectId = new ObjectId(jobId);
 
-    let job = await DirectJob.findOne(jobObjectId);
+    // === 1. DIRECT JOB ===
+    let job = await DirectJob.findOne({ _id: jobObjectId });
     if (job) {
       job.verified = true;
       await job.save();
 
-      const std = await Students.findById(job.uploadedBy);
-      const stds = await Students.find({ "jobs.jobID": jobObjectId });
+      const uploader = await Students.findById(job.uploadedBy);
+      if (!uploader)
+        return res.status(404).json({ message: "Uploader not found." });
 
-      const updatedTracks = new Set();
-      for (const std of stds) {
-        if (std.target !== true && std.trackID) {
-          const trackIdStr = std.trackID.toString();
-          if (!updatedTracks.has(trackIdStr)) {
-            const track = await Tracks.findById(std.trackID);
-            if (track) {
-              track.numberOfAchievers = (track.numberOfAchievers || 0) + 1;
-              await track.save();
-              updatedTracks.add(trackIdStr);
-            }
+      if (uploader.target !== true) {
+        const track = await Tracks.findById(uploader.trackID);
+        console.log(track);
+        if (track) {
+          track.numberOfAchievers = (track.numberOfAchievers || 0) + 1;
+          await track.save();
+        }
+      }
+
+      await Students.updateOne(
+        { _id: uploader._id, "jobs.jobID": jobObjectId },
+        { $set: { "jobs.$.verified": true, target: true } }
+      );
+
+      const students = await Students.find({ "jobs.jobID": jobObjectId });
+
+      for (const student of students) {
+        if (student.target !== true) {
+          const track = await Tracks.findById(student.trackID);
+          if (track) {
+            track.numberOfAchievers = (track.numberOfAchievers || 0) + 1;
+            await track.save();
           }
         }
       }
@@ -797,63 +810,131 @@ dashboard.post("/approveJob/:jobId", TokenMiddleware, async (req, res) => {
         { $set: { "jobs.$.verified": true }, target: true }
       );
 
-      const userNoti = await Notifications.findOne({ studentID: std._id });
+      let userNoti = await Notifications.findOne({ studentID: uploader._id });
+      if (!userNoti) {
+        userNoti = new Notifications({
+          studentID: uploader._id,
+          notifications: [],
+        });
+      }
       userNoti.notifications.push({
-        content: `We are thrilled to inform you that your ${job.jobTitle} has been officially approved! Your efforts and commitment have not gone unnoticed, and we look forward to seeing your contributions in this new role. Celebrate this achievement!`,
+        content: `We are thrilled to inform you that your ${job.jobTitle} has been officially approved!`,
         type: "job",
       });
       await userNoti.save();
 
-      jobApprovedEmail(std.fullName, std.email, job.jobTitle);
-      return res.status(200).json({ message: "Job verified successfully." });
+      jobApprovedEmail(uploader.fullName, uploader.email, job.jobTitle);
+      return res
+        .status(200)
+        .json({ message: "Direct job verified successfully." });
     }
 
-    job = await PlatformJob.findOne(jobObjectId);
+    // === 2. PLATFORM JOB ===
+    job = await PlatformJob.findOne({ _id: jobObjectId });
     if (job) {
       job.verified = true;
       await job.save();
 
-      const std = await Students.findById(job.uploadedBy);
+      const uploader = await Students.findById(job.uploadedBy);
+      if (!uploader)
+        return res.status(404).json({ message: "Uploader not found." });
+
+      if (uploader.target !== true) {
+        const track = await Tracks.findById(uploader.trackID);
+        console.log(track);
+        if (track) {
+          track.numberOfAchievers = (track.numberOfAchievers || 0) + 1;
+          await track.save();
+        }
+      }
+      await Students.updateOne(
+        { _id: uploader._id, "jobs.jobID": jobObjectId },
+        { $set: { "jobs.$.verified": true, target: true } }
+      );
+
+      const students = await Students.find({ "jobs.jobID": jobObjectId });
+
+      for (const student of students) {
+        if (student.target !== true) {
+          const track = await Tracks.findById(student.trackID);
+
+          console.log(track);
+          if (track) {
+            track.numberOfAchievers = (track.numberOfAchievers || 0) + 1;
+            await track.save();
+          }
+        }
+      }
+
       await Students.updateMany(
         { "jobs.jobID": jobObjectId },
         { $set: { "jobs.$.verified": true }, target: true }
       );
 
-      const userNoti = await Notifications.findOne({ studentID: std._id });
+      let userNoti = await Notifications.findOne({ studentID: uploader._id });
+      if (!userNoti) {
+        userNoti = new Notifications({
+          studentID: uploader._id,
+          notifications: [],
+        });
+      }
       userNoti.notifications.push({
-        content: `We are thrilled to inform you that your ${job.jobTitle} has been officially approved! Your efforts and commitment have not gone unnoticed, and we look forward to seeing your contributions in this new role. Celebrate this achievement!`,
+        content: `We are thrilled to inform you that your ${job.jobTitle} has been officially approved!`,
         type: "job",
       });
       await userNoti.save();
 
-      jobApprovedEmail(std.fullName, std.email, job.jobTitle);
-      return res.status(200).json({ message: "Job verified successfully." });
+      jobApprovedEmail(uploader.fullName, uploader.email, job.jobTitle);
+      return res
+        .status(200)
+        .json({ message: "Platform job verified successfully." });
     }
 
-    job = await RemoteJob.findOne(jobObjectId);
+    // === 3. REMOTE JOB ===
+    job = await RemoteJob.findOne({ _id: jobObjectId });
     if (job) {
       job.verified = true;
       await job.save();
 
-      const std = await Students.findById(job.uploadedBy);
-      await Students.updateMany(
-        { "jobs.jobID": jobObjectId },
-        { $set: { "jobs.$.verified": true }, target: true }
+      const uploader = await Students.findById(job.uploadedBy);
+      if (!uploader)
+        return res.status(404).json({ message: "Uploader not found." });
+
+      await Students.updateOne(
+        { _id: uploader._id, "jobs.jobID": jobObjectId },
+        { $set: { "jobs.$.verified": true, target: true } }
       );
 
-      const userNoti = await Notifications.findOne({ studentID: std._id });
+      if (uploader.target !== true) {
+        const track = await Tracks.findById(uploader.trackID);
+        if (track) {
+          track.numberOfAchievers = (track.numberOfAchievers || 0) + 1;
+          await track.save();
+        }
+      }
+
+      let userNoti = await Notifications.findOne({ studentID: uploader._id });
+      if (!userNoti) {
+        userNoti = new Notifications({
+          studentID: uploader._id,
+          notifications: [],
+        });
+      }
       userNoti.notifications.push({
-        content: `We are thrilled to inform you that your ${job.jobTitle} has been officially approved! Your efforts and commitment have not gone unnoticed, and we look forward to seeing your contributions in this new role. Celebrate this achievement!`,
+        content: `We are thrilled to inform you that your ${job.jobTitle} has been officially approved!`,
         type: "job",
       });
       await userNoti.save();
 
-      jobApprovedEmail(std.fullName, std.email, job.jobTitle);
-      return res.status(200).json({ message: "Job verified successfully." });
+      jobApprovedEmail(uploader.fullName, uploader.email, job.jobTitle);
+      return res
+        .status(200)
+        .json({ message: "Remote job verified successfully." });
     }
 
     return res.status(404).json({ message: "Job not found." });
   } catch (error) {
+    console.error("Approve job error:", error);
     return res
       .status(500)
       .json({ message: "An error occurred: " + error.message });
