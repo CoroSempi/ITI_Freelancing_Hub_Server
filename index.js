@@ -28,8 +28,11 @@ app.listen(port, () => {
 // MongoDB connection
 async function run() {
   try {
-    await connect(
-      `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@iti.fbxvxg7.mongodb.net/ITI_Freelancing_Hub`
+    // await connect(
+    //   `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@iti.fbxvxg7.mongodb.net/ITI_Freelancing_Hub`
+    // );
+        await connect(
+      `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.u8hk62y.mongodb.net/ITI_Freelancing_Hub`
     );
     console.log("Connected to MongoDB");
   } catch (error) {
